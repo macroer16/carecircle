@@ -1,5 +1,8 @@
 # RLS_TEST.md — The Live Two-Account Isolation Test
 
+> **Update 11 October 2026:** row-level security is now covered by **24 automated tests** (`npm test`, see `tests/rls.test.js`) that run the real schema in PostgreSQL with two families and Supabase-style sign-in. They found and fixed one gap (assigning an appointment to someone outside the circle). Run `supabase/migrations/2026-10-11-rls-fixes.sql` on the live project to apply the fix there. The app is deployed at https://carecircle-self.vercel.app. The manual two-account test below is still worth doing once against the live project.
+
+
 This is the single most important remaining verification step. Do not skip it.
 
 ## Setup

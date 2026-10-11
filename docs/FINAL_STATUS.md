@@ -1,5 +1,8 @@
 # FINAL_STATUS.md — CareCircle
 
+> **Update 11 October 2026:** row-level security is now covered by **24 automated tests** (`npm test`, see `tests/rls.test.js`) that run the real schema in PostgreSQL with two families and Supabase-style sign-in. They found and fixed one gap (assigning an appointment to someone outside the circle). Run `supabase/migrations/2026-10-11-rls-fixes.sql` on the live project to apply the fix there. The app is deployed at https://carecircle-self.vercel.app. The manual two-account test below is still worth doing once against the live project.
+
+
 **Full document set:** `RLS_TEST.md`, `DEPLOYMENT.md`, `PRIVACY_CHECKLIST.md`,
 `COMPETITIVE_ANALYSIS.md`, `YC_ASSESSMENT.md`, `USER_TEST_PLAN.md` — each written
 from real research/evidence gathered during this build, not templated filler.
