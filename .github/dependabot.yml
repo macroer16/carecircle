@@ -4,8 +4,17 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    groups:
+      all:
+        patterns: ["*"]
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: monthly
+    groups:
+      all:
+        patterns: ["*"]
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
