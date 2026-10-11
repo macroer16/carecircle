@@ -1,6 +1,6 @@
 -- CARECIRCLE — Production Database Schema
 -- Run this in Supabase SQL Editor (your own project) once, top to bottom.
--- Status: BUILT. NOT YET TESTED against a live Supabase project (requires your own project — see README).
+-- Row-level security is covered by automated tests: npm test (tests/rls.test.js).
 
 -- ============================================================
 -- TABLES
@@ -206,13 +206,36 @@ create policy "members add medications" on medications
 create policy "members update medications" on medications
   for update using (is_circle_member(circle_id));
 
--- appointments: same pattern as medications
+-- appointments: same pattern as medications, plus the person made responsible
+-- must be a member of the same circle (fix from 2026-10-11, see supabase/migrations)
+create or replace function is_user_in_circle(check_circle_id uuid, check_user_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = ''
+stable
+as $$
+  select exists (
+    select 1 from public.circle_members
+    where circle_id = check_circle_id and user_id = check_user_id
+  );
+$$;
+
 create policy "members view appointments" on appointments
   for select using (is_circle_member(circle_id));
 create policy "members add appointments" on appointments
-  for insert with check (is_circle_member(circle_id) and added_by = auth.uid());
+  for insert with check (
+    is_circle_member(circle_id)
+    and added_by = auth.uid()
+    and (responsible_user_id is null or is_user_in_circle(circle_id, responsible_user_id))
+  );
 create policy "members update appointments" on appointments
-  for update using (is_circle_member(circle_id));
+  for update
+  using (is_circle_member(circle_id))
+  with check (
+    is_circle_member(circle_id)
+    and (responsible_user_id is null or is_user_in_circle(circle_id, responsible_user_id))
+  );
 
 -- care_notes: any member views/adds; only the author can edit/delete their own note
 create policy "members view notes" on care_notes
