@@ -1,165 +1,110 @@
-# CareCircle — Setup & Status
+# CareCircle
 
-**See also:** `FINAL_STATUS.md` (precise, per-feature status), `RLS_TEST.md` (the
-critical remaining security test), `DEPLOYMENT.md` (full setup sequence).
+[![CI](https://github.com/macroer16/carecircle/actions/workflows/ci.yml/badge.svg)](https://github.com/macroer16/carecircle/actions/workflows/ci.yml)
 
-This README's own history below (the "round" sections) is kept as an honest build
-log — it shows real bugs found and fixed through actual testing, not a polished
-retelling. If anything here conflicts with `FINAL_STATUS.md`, that file is correct;
-this is a running log, not always fully reconciled in real time.
+A private shared space for families looking after someone: medications, appointments and notes in one place, so everyone knows what's happening and who's handling it.
 
-## SECURITY HARDENING (round — v7)
+**[Open the app](https://carecircle-self.vercel.app)** · Status: **in progress** (working app; some features still need live setup, see below)
 
-Found via direct research against Supabase's own documentation and their automated security advisor
-(rule `0011 function search path mutable`): **all 5 `SECURITY DEFINER` functions in the schema were
-missing `set search_path = ''`.** This is a real, documented PostgreSQL/Supabase security requirement
-— without it, a `SECURITY DEFINER` function inherits the caller's search path, which in adversarial
-conditions can be used to shadow expected schema objects and potentially escalate privileges. Fixed
-all 5 functions (`is_circle_member`, `is_circle_owner`, `redeem_invitation`, `mark_circle_seen`,
-`handle_new_circle`) with the hardening and fully schema-qualified every table reference inside them.
+<img src="docs/signin.png" alt="CareCircle sign-up screen on a phone" width="320">
 
-## HONEST BUILD STATUS (updated after two rounds of self-audit)
+## The problem
 
-| Component | Status | Tested | Verified |
-|---|---|---|---|
-| Frontend (dashboard, medications, appointments, notes, family/invitations, settings) | **BUILT** | Compiles cleanly — rebuilt and confirmed 5 times across this session, most recently after adding settings/delete-account UI | Not yet run against a live Supabase project |
-| Database schema + RLS policies (7 tables, 20 policies) | **BUILT** | SQL written to spec, structure confirmed via direct file inspection | **NOT YET TESTED** — has not been run against a live database |
-| Invitation system (secure token, redemption, **and revocation — added after an earlier audit caught it was backend-only**) | **BUILT** | Logic written; revoke button now actually reachable in the UI | Not yet tested end-to-end with real accounts |
-| Member removal (owner capability) | **BUILT** — was found missing from the UI in an earlier self-audit, now fixed with a confirm-before-remove flow | Compiles | Not yet tested live |
-| Password reset (forgot password + set-new-password flow) | **BUILT** — added this round, was previously missing entirely | Compiles | Not yet tested live |
-| Account deletion | **BUILT** — required a Supabase Edge Function (`supabase/functions/delete-account`) since the client SDK can't delete auth users directly; **includes a real safety check** that blocks deletion if the user owns a circle with other members in it, rather than silently orphaning their data | Compiles; edge function logic reviewed | **NOT DEPLOYED** — Edge Functions require the Supabase CLI and your project, see below |
-| PWA (manifest, service worker, installability) | **BUILT** | Confirmed generated correctly on every build | Not yet tested installing on an actual phone |
-| Soft-delete (medications/appointments) | **BUILT** | Implemented per spec | Not yet tested |
-| Deployment | **NOT DEPLOYED** | — | Requires your own Vercel + Supabase accounts |
-| "Since you last checked" (What Changed) | **BUILT** — real feature, not AI, counts new medications/appointments/notes since last dashboard visit, tracked via a security-definer function (not a raw UPDATE policy, to avoid a privilege-escalation risk) | Compiles clean | Not yet tested live — requires two real accounts visiting at different times to confirm the count is accurate |
-| Note editing/deleting (author-only) | **BUILT this round** — a real gap found by audit: the database (`edited_at` column, "authors edit own notes" RLS policy) has supported this since v1, but the API function and UI were never actually written, only assumed complete because the column existed | Compiles clean | Not yet tested live |
-| Medication/appointment editing | **NOT BUILT** — `updateMedication` exists in the API layer but isn't wired into the UI, and there's no `updateAppointment` at all. Flagged honestly as a deliberate v1 scope boundary, not a bug: soft-delete + re-add works as a functional stopgap | — | — |
+When a parent or grandparent needs care, the family usually coordinates it through group chats. Medication changes get lost in the scroll, nobody is sure who's taking Mum to Friday's appointment, and there's no single place to check. CareCircle gives each family one private "circle" for that information.
 
-### What changed this round, honestly
-Two real gaps were found and fixed in earlier self-audits this session (member removal and invitation
-revocation existed in the backend but weren't reachable in the UI). This round added two more things
-that were genuinely missing entirely: password reset, and account deletion (which required real
-architectural thought — see the Edge Function note above — not a superficial fix).
+## What it does
 
-**What this means plainly:** every screen, every database table, every security policy, and every
-piece of logic from the locked spec has been actually written — not described, not planned, written
-as real, complete code — and the frontend has been actually compiled successfully, not just claimed to
-work. What has **not** happened, because it genuinely can't from this environment: running it against
-a live database, and the RLS isolation test (Part 25/26 from the plan) that only means something once
-real accounts exist. That's the honest line between "built" and "verified."
+- **Care circles:** create a circle and invite family members with a link that expires after 7 days and can be revoked.
+- **Medications:** name, dosage, schedule and notes. Removing one is a soft delete, so nothing is lost by accident.
+- **Appointments:** date, time, doctor, location and who's taking responsibility.
+- **Notes:** a shared log of updates. Only the author can edit or delete their own note.
+- **Dashboard:** "since you last checked" changes, upcoming appointments nobody has picked up, and who's handling what.
+- **Accounts:** sign up, log in, password reset, and account deletion that won't orphan a circle other people still use.
+- **Installable app (PWA)** on phones, with a push-reminder pipeline (needs live setup, see status).
 
----
+## Security: the part I care about most
 
-## WHAT YOU NEED TO DO — IN ORDER
+This app holds health-related information, so the database itself enforces who can see what, using **PostgreSQL row-level security (RLS)**. Even if someone calls the API directly, the database only returns rows from circles they belong to.
 
-### 1. Create your Supabase project
-- Go to supabase.com, create a free project
-- In the SQL Editor, paste the entire contents of `supabase-schema.sql` and run it
-- Go to Project Settings → API, copy your Project URL and anon/public key
+**The RLS rules are tested automatically.** `tests/rls.test.js` runs the real `supabase-schema.sql` in PostgreSQL (via [PGlite](https://pglite.dev), Postgres compiled to WebAssembly) with Supabase-style sign-in, then signs in as four test users (two families, plus an outsider and an anonymous visitor) and checks 24 scenarios:
 
-### 2. Set up local environment
+| Area | What's checked |
+|---|---|
+| Isolation | A family can't see another family's circle, members, medications, appointments or notes. Outsiders and anonymous visitors see nothing. |
+| Spoofing | You can't add data to someone else's circle, write as another user, or create a circle in someone else's name. |
+| Escalation | You can't add yourself to a circle directly, promote yourself to owner, or rename a circle you don't own. |
+| Data safety | Medications can't be hard-deleted. Records can't be moved into a circle you're not in. Only authors edit their notes. |
+| Invitations | Invalid, revoked and expired links are refused. Valid links add a *member*, never an owner. Anonymous visitors can't redeem. |
+| Privacy | Push subscriptions are private, even within a family. Profiles are visible only to people in your circles. |
+
+**The tests found a real gap, which is now fixed:** a member could assign an appointment to *any* user, including someone from another family. The insert and update policies now check that the responsible person is in the same circle ([migration](supabase/migrations/2026-10-11-rls-fixes.sql)).
+
+Other hardening: every `SECURITY DEFINER` function sets `search_path = ''` (Supabase advisor rule 0011), joining a circle only happens through a server-side `redeem_invitation()` function, and the "last seen" timestamp is updated through a narrow function rather than an update policy that could let members change their own role.
+
+## How it's built
+
+```mermaid
+flowchart LR
+  P[React + Vite PWA<br>Vercel] -->|supabase-js, anon key| A[Supabase Auth]
+  P --> D[(Postgres<br>RLS policies)]
+  P --> F[Edge Functions<br>delete-account, send-reminders]
+  F --> D
+  T[tests/rls.test.js<br>PGlite in CI] -. tests .-> S[supabase-schema.sql]
+  S --> D
 ```
+
+| Part | Tech |
+|---|---|
+| Front end | React 18, Vite, installable PWA with a service worker (Workbox) |
+| Back end | Supabase: Postgres, Auth, Edge Functions (Deno) |
+| Security | Row-level security policies, security-definer functions, soft deletes |
+| Tests and CI | Node test runner + PGlite, GitHub Actions running the RLS tests and production build on every push |
+| Hosting | Vercel |
+
+## Run it locally
+
+You need Node 20+ and a free [Supabase](https://supabase.com) project.
+
+```bash
+git clone https://github.com/macroer16/carecircle.git
+cd carecircle
 npm install
-cp .env.example .env
-# paste your real Supabase URL and anon key into .env
+cp .env.example .env.local   # add your Supabase URL and anon key
 npm run dev
 ```
 
-### 3. RUN THE RLS TEST — DO NOT SKIP THIS
-This is the single most important step in the entire project, per every version of the plan we built.
-1. Sign up as **Test User A**, create a circle, add a medication
-2. Open a **private/incognito browser window**, sign up as **Test User B**, create a *different* circle
-3. As User B, confirm you cannot see User A's circle, medications, or appointments anywhere — not in
-   the UI, and not by inspecting network requests in browser dev tools
-4. As User A, create an invitation, copy the link, open it as User B — confirm User B now correctly
-   joins User A's circle and can see the data
-5. Test an expired/revoked invitation link shows a clear error, not a crash
+In your Supabase project, run `supabase-schema.sql` once in the SQL Editor.
 
-**Only mark RLS as "VERIFIED" in the status table above once you've personally done this.**
+## Tests
 
-### 3b. Deploy the account-deletion Edge Function
-This one extra step, because the client alone can't delete accounts safely:
+```bash
+npm test
 ```
-npm install -g supabase
-supabase login
-supabase link --project-ref your-project-ref
-supabase functions deploy delete-account
-```
-Then in your Supabase project dashboard, under Edge Functions → delete-account → Settings, confirm
-`SUPABASE_SERVICE_ROLE_KEY` is available (Supabase sets this automatically for you).
 
-### 4. Deploy
-- Push this code to a GitHub repository
-- Import it into Vercel
-- Add your `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as environment variables in Vercel's
-  project settings
-- Deploy
+No Supabase project is needed for the tests. They run the schema in a local in-memory PostgreSQL.
 
-### 5. Real device test
-- Open the deployed link on an actual phone (not just desktop browser resized)
-- Confirm the "Add to Home Screen" install flow works
-- Test with genuinely large fingers on genuinely small touch targets — the design was built mobile
-  first, but only a real phone confirms it
+## Status
 
-### 6. THEN — and only then — the real beta
-Follow Part 5 of the plan: validation conversations with 3-5 real families before wider use, exactly
-as designed. The product being technically built is necessary but not sufficient — the plan's own
-framework says not to claim success without evidence, and that applies here too: this is real,
-compiled, working code, not yet a proven product.
+| Feature | Status |
+|---|---|
+| Sign-up, circles, medications, appointments, notes | Working on the live app |
+| RLS policies | 24 automated tests passing. Fix written; **run the migration on the live database** |
+| Invitations (create, redeem, revoke, expiry) | Logic tested automatically. A full live test with two real accounts is still to do |
+| Account deletion | Edge Function written, not yet deployed |
+| Push reminders | Pipeline built. Needs VAPID keys, function deployment and scheduling |
+| Known issue | Reminder times use UTC, so they'll be an hour out during British Summer Time |
 
----
+Planning, research and the full build history are in [`docs/`](docs/).
 
-## FILES IN THIS PROJECT
+## What I learned
 
-- `supabase-schema.sql` — run once in your Supabase SQL Editor
-- `src/App.jsx` — the entire application UI (all screens)
-- `src/lib/api.js` — every database operation, matching the locked permissions model exactly
-- `src/lib/supabase.js` — client setup
-- `vite.config.js` — build config, including real PWA configuration
-- `.env.example` — template for your own Supabase credentials
+_TODO (Victor writes this)_
 
-## WHAT'S DELIBERATELY NOT IN V1 (per the locked spec)
-AI summaries, pharmacy/calendar integrations, multiple care circles per account, photo/document
-attachments, native iOS/Android apps. Push notification reminders WERE deliberately deferred in the
-original plan but have since been built (see below) — this list is updated to reflect that honestly
-rather than left stale.
+## Next steps
 
-## REMINDERS (push notifications) — added this round
+- [ ] Run the RLS migration on the live database, then a two-account test on the live app
+- [ ] Deploy the delete-account Edge Function
+- [ ] Set up push reminders and fix time zones
+- [ ] Editing for medications and appointments (currently delete and re-add)
 
-**What's real:** the full pipeline is actually built — database columns for structured reminder
-times, a service worker that receives and displays real push notifications, subscription management
-in the app, and a working Edge Function that sends them. This isn't a placeholder toggle.
-
-**Honest limitation, not hidden:** the Edge Function compares reminder times against UTC. The UK
-shifts between GMT and BST (+1 hour) across the year — during BST, a reminder set for "8:00am" will
-actually fire at 9:00am local time. This needs a proper timezone-aware fix before relying on it day to
-day; flagged here rather than silently shipped as if it were solved.
-
-### Setup steps for reminders specifically:
-
-1. **Generate your own VAPID keys** (don't reuse any example keys from earlier in this project — those
-   were for build-testing only):
-   ```
-   npx web-push generate-vapid-keys
-   ```
-2. Add the public key to your `.env` as `VITE_VAPID_PUBLIC_KEY`
-3. In Supabase, go to Edge Functions → send-reminders → Settings, add two secrets:
-   - `VAPID_PUBLIC_KEY` (same value as above)
-   - `VAPID_PRIVATE_KEY` (the private key — never put this in `.env` or any frontend file)
-4. Deploy the function: `supabase functions deploy send-reminders`
-5. In the SQL Editor, enable scheduling (runs the check every minute):
-   ```sql
-   select cron.schedule(
-     'send-reminders-every-minute',
-     '* * * * *',
-     $$
-     select net.http_post(
-       url := 'https://YOUR_PROJECT.supabase.co/functions/v1/send-reminders',
-       headers := jsonb_build_object('Authorization', 'Bearer YOUR_SERVICE_ROLE_KEY')
-     );
-     $$
-   );
-   ```
-6. **Reminder time UI:** now actually wired — the Add Medication form includes a real "Reminder time"
-   field. One reminder time per medication for now (the schema supports multiple via the array column,
-   the UI only sets one — a real, deliberate v1.1 scope line, not an oversight).
+Built by [Victor Benson](https://macroer16.github.io/victor-cloud-portfolio/).
